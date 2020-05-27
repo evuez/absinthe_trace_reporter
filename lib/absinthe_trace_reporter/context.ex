@@ -5,7 +5,7 @@ defmodule AbsintheTraceReporter.Context do
     info = build_trace_info(conn)
     conn = Absinthe.Plug.put_options(conn, %{a: 1})
     options = Map.merge(conn.private[:absinthe], info)
-    conn = Absinthe.Plug.put_options(conn, context: options)
+    Absinthe.Plug.put_options(conn, context: options)
   end
 
   def build_trace_info(conn) do

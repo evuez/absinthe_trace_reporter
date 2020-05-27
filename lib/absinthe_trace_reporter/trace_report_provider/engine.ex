@@ -63,7 +63,7 @@ defmodule AbsintheTraceReporter.TraceProvider.Engine do
   end
 
   defp root_node do
-    %{
+    Mdg.Engine.Proto.Trace.Node.new(%{
       duration: 0,
       fieldName: "RootQueryType",
       meta: nil,
@@ -72,7 +72,7 @@ defmodule AbsintheTraceReporter.TraceProvider.Engine do
       returnType: "",
       startOffset: 0,
       child: []
-    }
+    })
   end
 
   defp from_blueprint_execution(%{execution: %{resolvers: resolvers}}) do
@@ -84,202 +84,61 @@ defmodule AbsintheTraceReporter.TraceProvider.Engine do
   end
 
   def build_trace_tree(resolvers) when is_list(resolvers) do
-    # We prepend a root node
-    nodes_list = [root_node() | resolvers]
-    nodes_depth_map = nodes_by_depth_map(nodes_list, %{})
-
-    initial_depth_level = 0
-
-    initial_list = Map.get(nodes_depth_map, initial_depth_level)
-    initial_nodes_depth_map = Map.delete(nodes_depth_map, initial_depth_level)
-
-    Enum.reduce(
-      initial_list,
-      nil,
-      fn node, _list ->
-        extract(node, initial_nodes_depth_map, initial_depth_level)
-      end
-    )
-  end
-
-  def build_trace_tree(_) do
-    []
-  end
-
-  def tree([node | tail]) do
     children =
-      tail
-      |> Enum.filter(fn child ->
-        case child.path |> Enum.reverse() do
-          [_, i | path] when is_integer(i) -> Enum.reverse(node.path) == path
-          [_ | path] -> Enum.reverse(node.path) == path
-          _ -> false
-        end
-      end)
-      |> Enum.map(fn child ->
-        case child.path |> Enum.reverse() do
-          [_, i | _path] when is_integer(i) -> {:index, i, child}
-          _ -> {:child, child}
-        end
-      end)
+      resolvers
+      |> Enum.sort_by(& &1.path)
+      |> Enum.reduce(%{}, fn
+        %{path: []}, acc ->
+          acc
 
-    child_nodes =
-      children
-      |> Enum.map(fn
-        {:index, i, child} ->
-          build_node_index(
-            i,
-            children
-            |> Enum.map(fn {:index, i, c} ->
-              build_node(c, tail)
+        %{path: path} = node, acc ->
+          # TODO: integer -> list indices
+          access_path =
+            path
+            |> Enum.map(fn
+              index when is_integer(index) ->
+                Access.key(index, %{new_index_node(index) | child: %{}})
+
+              part ->
+                part
             end)
-          )
+            |> Enum.intersperse(Access.key(:child))
 
-        {:child, child} ->
-          case tail do
-            [_ | tail] ->
-              tail
-              |> Enum.filter(fn child ->
-                case child.path |> Enum.reverse() do
-                  [_ | path] -> Enum.reverse(node.path) == path
-                  _ -> false
-                end
-              end)
-              |> Enum.map(fn n ->
-                build_node(child, tree(tail))
-              end)
-
-            [child2] ->
-              build_node(child, child2)
-
-            [] ->
-              build_node(child, [])
-          end
+          put_in(acc, access_path, %{new_node(node) | child: %{}})
       end)
+      |> reduce_nodes()
 
-    build_node(node, child_nodes)
+    %{root_node() | child: children}
   end
 
-  def tree([]) do
-    []
-  end
+  def build_trace_tree(_), do: []
 
-  def extract(node, nodes_depth_map, 0) do
-    next_depth_level = 1
+  defp reduce_nodes(%{} = nodes), do: nodes |> Map.values() |> Enum.map(&reduce_node/1)
+  defp reduce_node(%{child: children} = node), do: %{node | child: reduce_nodes(children)}
 
-    case {Map.get(nodes_depth_map, next_depth_level, []),
-          Map.get(nodes_depth_map, next_depth_level + 1, [])} do
-      {children, []} ->
-        children =
-          Enum.map(children, fn child ->
-            build_node(child, extract(child, nodes_depth_map, next_depth_level))
-          end)
-
-        build_node(node, children)
-
-      {children, _} ->
-        children =
-          Enum.map(children, fn child ->
-            build_node(child, extract(child, nodes_depth_map, next_depth_level))
-          end)
-
-        build_node(node, children)
-    end
-  end
-
-  def extract(f, nodes_depth_map, depth_level) do
-    next_depth_level = depth_level + 1
-
-    nodes = Map.get(nodes_depth_map, next_depth_level, [])
-    maybe_index_nodes = Map.get(nodes_depth_map, next_depth_level + 1, [])
-
-    case {nodes, maybe_index_nodes} do
-      {[], []} ->
-        []
-
-      {[], indexed_nodes} ->
-        indexed_nodes(f, indexed_nodes, nodes_depth_map, next_depth_level)
-
-      {[singular_node], []} ->
-        build_node(singular_node, extract(singular_node, nodes_depth_map, next_depth_level))
-
-      {[singular_node], child} ->
-        build_node(singular_node, extract(child, nodes_depth_map, next_depth_level))
-
-      {multiple_nodes, _child} ->
-        Enum.map(multiple_nodes, fn child ->
-          build_node(child, extract(child, nodes_depth_map, next_depth_level))
-        end)
-    end
-  end
-
-  # When the nodes at level n don't exist but they do at n + 1 we
-  # deal with a list of items
-  defp indexed_nodes(root, indexed_nodes, nodes_depth_map, next_depth_level) do
-    indexed_nodes
-    |> Enum.filter(fn node ->
-      case node.path |> Enum.reverse() do
-        [_, i | tail] when is_integer(i) -> Enum.reverse(root.path) == tail
-        _ -> false
-      end
-    end)
-    |> Enum.group_by(fn node ->
-      node.path |> Enum.reverse() |> Enum.filter(fn i -> is_integer(i) end) |> Enum.at(0)
-    end)
-    |> Enum.map(fn {i, nodes} ->
-      nodes =
-        Enum.map(nodes, fn child ->
-          build_node(child, extract(child, nodes_depth_map, next_depth_level + 1))
-        end)
-
-      build_node_index(i, nodes)
-    end)
-  end
-
-  defp build_node(field, children) when is_list(children) do
+  defp new_index_node(index) do
     Mdg.Engine.Proto.Trace.Node.new(
       cache_policy: nil,
-      child: children,
-      end_time: field.startOffset + field.duration,
-      error: [],
-      id: {:field_name, field.fieldName},
-      parent_type: field.parentType,
-      start_time: field.startOffset,
-      type: field.returnType
-    )
-  end
-
-  defp build_node(field, children) do
-    build_node(field, [children])
-  end
-
-  def build_node_index(i, children \\ []) do
-    Mdg.Engine.Proto.Trace.Node.new(
-      cache_policy: nil,
-      child: children,
+      child: %{},
       end_time: 0,
       error: [],
-      id: {:index, i},
+      id: {:index, index},
       parent_type: "",
       start_time: 0,
       type: ""
     )
   end
 
-  defp nodes_by_depth_map([], processed_map), do: processed_map
-
-  defp nodes_by_depth_map([node | tail], before_node_processed_map) do
-    path = Map.get(node, :path)
-    node_depth = depth(node, path)
-
-    node_at_depth = Map.get(before_node_processed_map, node_depth, []) ++ [node]
-    after_node_processed_map = Map.put(before_node_processed_map, node_depth, node_at_depth)
-
-    case tail do
-      tail when is_list(tail) -> nodes_by_depth_map(tail, after_node_processed_map)
-      tail -> nodes_by_depth_map([tail], after_node_processed_map)
-    end
+  defp new_node(node) do
+    Mdg.Engine.Proto.Trace.Node.new(
+      cache_policy: nil,
+      child: %{},
+      end_time: node.startOffset + node.duration,
+      error: [],
+      id: {:field_name, node.fieldName},
+      parent_type: node.parentType,
+      start_time: node.startOffset,
+      type: node.returnType
+    )
   end
-
-  def depth(_, path) when is_list(path), do: length(path)
 end

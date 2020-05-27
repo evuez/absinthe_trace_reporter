@@ -1,31 +1,28 @@
 defmodule AbsintheTraceReporter.Signature do
-  alias Absinthe.Language
+  def build(operations) when is_list(operations),
+    do: "# -\n{" <> (operations |> Enum.map_join("\n", &operation/1)) <> "}"
 
-  def build(operations) when is_list(operations) do
-    "# -\n{" <> (operations |> Enum.map_join("\n", &operation/1)) <> "}"
-  end
-
-  def operation(%Absinthe.Blueprint.Document.Operation{selections: selections} = operation) do
-    from_selections(selections)
-  end
+  def operation(%Absinthe.Blueprint.Document.Operation{selections: selections}),
+    do: from_selections(selections)
 
   def from_selections([]), do: []
 
-  def from_selections(selections) when is_list(selections) do
-    # from_selection(selection)
-    selections
-    |> Enum.map(fn selection -> from_selection(selection) end)
-  end
+  def from_selections(selections) when is_list(selections),
+    do: selections |> Enum.map(&from_selection/1) |> Enum.sort()
 
-  def from_selection(%Absinthe.Blueprint.Document.Field{name: name, selections: []}) do
-    "#{name}"
-  end
+  def from_selection(%Absinthe.Blueprint.Document.Field{name: name, selections: []}), do: name
 
-  def from_selection(%Absinthe.Blueprint.Document.Field{name: name, selections: selections}) do
-    "#{name}{" <> (from_selections(selections) |> Enum.join(" ")) <> "}"
-  end
+  def from_selection(%Absinthe.Blueprint.Document.Field{name: name, selections: selections}),
+    do: "#{name}{" <> (selections |> from_selections() |> Enum.join(" ")) <> "}"
 
-  def from_selection(%Absinthe.Blueprint.Document.Fragment.Spread{name: name}) do
-    "#{name}"
-  end
+  def from_selection(%Absinthe.Blueprint.Document.Fragment.Spread{name: name}), do: name
+
+  def from_selection(%Absinthe.Blueprint.Document.Fragment.Inline{selections: selections}),
+    do: "inline{" <> (selections |> from_selections() |> Enum.join(" ")) <> "}"
+
+  def from_selection(%Absinthe.Blueprint.Document.Fragment.Named{
+        name: name,
+        selections: selections
+      }),
+      do: "#{name}{" <> (selections |> from_selections() |> Enum.join(" ")) <> "}"
 end
